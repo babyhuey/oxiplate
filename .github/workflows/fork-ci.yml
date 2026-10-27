@@ -1,0 +1,73 @@
+name: fork-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: "Branch, tag, or SHA to test"
+        required: true
+
+concurrency:
+  group: "${{ github.workflow }}:${{ inputs.target_ref }}"
+
+env:
+  RUSTUP_AUTO_INSTALL: "0"
+
+jobs:
+  pinned-toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ inputs.target_ref }}
+
+      - name: Show checked-out SHA
+        run: echo "checked-out SHA $(git rev-parse HEAD)"
+
+      - name: Get current toolchain
+        id: toolchain
+        run: |
+          TOOLCHAIN="$(cat ./.current-toolchain)"
+
+          SAFE_REGEX='^[a-z0-9-]+$'
+          if [[ ! $TOOLCHAIN =~ $SAFE_REGEX ]]; then
+            echo 'Toolchain value in "./.current-toolchain" contains unexpected characters and further checks have been abandoned'
+            exit 1
+          fi
+
+          echo "toolchain=$TOOLCHAIN" >> $GITHUB_OUTPUT
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.toolchain }}
+          components: "clippy, rustfmt, rust-src, llvm-tools-preview"
+          target: "x86_64-unknown-none"
+
+      - name: Fetch dependencies
+        run: cargo +${{ steps.toolchain.outputs.toolchain }} fetch --locked --target host-tuple
+
+      - name: Install `just`
+        run: cargo +${{ steps.toolchain.outputs.toolchain }} install --locked just@1.59.0
+
+      - name: Install `cargo-deny`
+        run: cargo +${{ steps.toolchain.outputs.toolchain }} install --locked cargo-deny@0.19.0
+
+      - name: Setup expansion and book
+        run: just setup-expansion setup-book
+
+      - name: Run tests
+        run: just test
+
+      - name: Check formatting
+        if: ${{ !cancelled() }}
+        run: just format-check
+
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: just clippy-strict
+
+      - name: Check dependencies
+        if: ${{ !cancelled() }}
+        run: just check-deps ''
